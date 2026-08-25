@@ -1,0 +1,100 @@
+services:
+  # 1. Redis Cache & Celery Broker
+  redis:
+    image: redis:alpine
+    container_name: ml_redis
+    ports:
+      - "6379:6379"
+    restart: always
+
+  # 2. PostgreSQL Database
+  postgres:
+    image: postgres:17-alpine
+    container_name: ml_postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgrespassword
+      POSTGRES_DB: ml_gateway
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - postgres_data:/var/lib/postgresql/data
+    restart: always
+
+  # 3. Sentiment FastAPI Microservice
+  backend-sentiment:
+    build: ./backend_python_sentiment
+    container_name: ml_sentiment_api
+    ports:
+      - "8000:8000"
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+    depends_on:
+      - redis
+
+  # 4. Sentiment Celery Worker
+  worker-sentiment:
+    build: ./backend_python_sentiment
+    container_name: ml_sentiment_worker
+    command: celery -A app.celery_app worker --loglevel=info
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+    depends_on:
+      - redis
+      - backend-sentiment
+
+  # 5. Toxicity FastAPI Microservice
+  backend-toxicity:
+    build: ./backend_python_toxicity
+    container_name: ml_toxicity_api
+    ports:
+      - "8001:8001"
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+    depends_on:
+      - redis
+
+  # 6. Toxicity Celery Worker
+  worker-toxicity:
+    build: ./backend_python_toxicity
+    container_name: ml_toxicity_worker
+    command: celery -A app.celery_app worker --loglevel=info
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+    depends_on:
+      - redis
+      - backend-toxicity
+
+  # 7. Node.js API Gateway
+  api-gateway:
+    build: ./backend_node
+    container_name: ml_api_gateway
+    ports:
+      - "5000:5000"
+    environment:
+      - PORT=5000
+      - REDIS_URL=redis://redis:6379
+      - DB_HOST=postgres
+      - DB_USER=postgres
+      - DB_PASSWORD=postgrespassword
+      - DB_NAME=ml_gateway
+      - SENTIMENT_SERVICE_URL=http://backend-sentiment:8000/analyze
+      - TOXICITY_SERVICE_URL=http://backend-toxicity:8001/analyze
+    depends_on:
+      - redis
+      - postgres
+      - backend-sentiment
+      - backend-toxicity
+
+volumes:
+  postgres_data:
